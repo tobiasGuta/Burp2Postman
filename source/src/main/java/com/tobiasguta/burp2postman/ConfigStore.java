@@ -1,10 +1,10 @@
-package com.tobiasare.burp2postman;
+package com.tobiasguta.burp2postman;
 
 import burp.api.montoya.persistence.Preferences;
 
-import static com.tobiasare.burp2postman.Models.Destination;
-import static com.tobiasare.burp2postman.Models.FolderRef;
-import static com.tobiasare.burp2postman.Models.ItemRef;
+import static com.tobiasguta.burp2postman.Models.Destination;
+import static com.tobiasguta.burp2postman.Models.FolderRef;
+import static com.tobiasguta.burp2postman.Models.ItemRef;
 
 final class ConfigStore {
     private static final String PREFIX = "burp2postman.";
@@ -20,6 +20,14 @@ final class ConfigStore {
 
     void baseUrl(String value) {
         set("baseUrl", value);
+    }
+
+    boolean customEndpointEnabled() {
+        return Boolean.TRUE.equals(preferences.getBoolean(PREFIX + "customEndpointEnabled"));
+    }
+
+    void customEndpointEnabled(boolean value) {
+        preferences.setBoolean(PREFIX + "customEndpointEnabled", value);
     }
 
     boolean rememberApiKey() {
@@ -60,6 +68,24 @@ final class ConfigStore {
 
     void removeTransportHeaders(boolean value) {
         preferences.setBoolean(PREFIX + "removeTransportHeaders", value);
+    }
+
+    RequestConverter.HeaderFormat headerFormat() {
+        String value = get("headerFormat");
+        if (value != null) {
+            try {
+                return RequestConverter.HeaderFormat.valueOf(value);
+            } catch (IllegalArgumentException ignored) {
+                // Fall through to the forward-compatible default.
+            }
+        }
+        return RequestConverter.HeaderFormat.STRUCTURED;
+    }
+
+    void headerFormat(RequestConverter.HeaderFormat value) {
+        set("headerFormat", value == null
+                ? RequestConverter.HeaderFormat.STRUCTURED.name()
+                : value.name());
     }
 
     Destination destination() {

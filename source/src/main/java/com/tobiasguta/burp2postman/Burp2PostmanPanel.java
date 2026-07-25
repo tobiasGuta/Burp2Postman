@@ -1,20 +1,23 @@
-package com.tobiasare.burp2postman;
+package com.tobiasguta.burp2postman;
 
 import burp.api.montoya.MontoyaApi;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
-import static com.tobiasare.burp2postman.Models.Destination;
-import static com.tobiasare.burp2postman.Models.FolderRef;
-import static com.tobiasare.burp2postman.Models.ItemRef;
+import static com.tobiasguta.burp2postman.Models.Destination;
+import static com.tobiasguta.burp2postman.Models.FolderRef;
+import static com.tobiasguta.burp2postman.Models.ItemRef;
 
 final class Burp2PostmanPanel {
     private static final FolderRef COLLECTION_ROOT = new FolderRef("", "Collection root", "(Collection root)");
@@ -28,12 +31,16 @@ final class Burp2PostmanPanel {
     private final JPanel root = new JPanel(new BorderLayout(10, 10));
     private final JPasswordField apiKeyField = new JPasswordField();
     private final JTextField baseUrlField = new JTextField();
+    private final JCheckBox customEndpoint = new JCheckBox("Advanced: use a custom API endpoint");
+    private final JLabel apiKeyDestinationHost = new JLabel(ApiEndpoint.DEFAULT_HOST);
     private final JCheckBox rememberApiKey = new JCheckBox("Remember API key in Burp preferences");
     private final JComboBox<ItemRef> workspaceCombo = new JComboBox<>();
     private final JComboBox<ItemRef> collectionCombo = new JComboBox<>();
     private final JComboBox<FolderRef> folderCombo = new JComboBox<>();
     private final JCheckBox preserveHost = new JCheckBox("Preserve custom Host header", true);
     private final JCheckBox removeTransportHeaders = new JCheckBox("Remove transport-managed headers", true);
+    private final JComboBox<RequestConverter.HeaderFormat> headerFormat =
+            new JComboBox<>(RequestConverter.HeaderFormat.values());
     private final JButton connectButton = new JButton("Connect / Refresh");
     private final JButton saveButton = new JButton("Save default destination");
     private final JButton createCollectionButton = new JButton("New collection");
@@ -43,6 +50,10 @@ final class Burp2PostmanPanel {
 
     private volatile boolean suppressSelectionEvents;
     private volatile Destination currentDestination;
+    private volatile String confirmedCustomBaseUrl;
+    private final AtomicLong workspaceLoadGeneration = new AtomicLong();
+    private final AtomicLong collectionLoadGeneration = new AtomicLong();
+    private final AtomicLong folderLoadGeneration = new AtomicLong();
 
     Burp2PostmanPanel(
             MontoyaApi api,
@@ -69,7 +80,35 @@ final class Burp2PostmanPanel {
     }
 
     String baseUrl() {
-        return PostmanClient.normalizeBaseUrl(baseUrlField.getText());
+        return ApiEndpoint.normalize(customEndpoint.isSelected()
+                ? baseUrlField.getText()
+                : ApiEndpoint.DEFAULT_BASE_URL);
+    }
+
+    ApiEndpoint approvedEndpoint(Component parent) {
+        String base = baseUrl();
+        String host = ApiEndpoint.hostOf(base);
+        if (ApiEndpoint.DEFAULT_HOST.equalsIgnoreCase(host)) {
+            return ApiEndpoint.defaultEndpoint();
+        }
+        if (!customEndpoint.isSelected()) {
+            throw new IllegalStateException("Enable the Advanced custom API endpoint option first.");
+        }
+        if (base.equals(confirmedCustomBaseUrl)) {
+            return ApiEndpoint.confirmed(base);
+        }
+        int choice = JOptionPane.showConfirmDialog(
+                parent,
+                "The Postman X-API-Key will be sent to this exact hostname:\n\n"
+                        + host
+                        + "\n\nOnly continue if you trust and intended to configure this host.",
+                "Confirm custom API-key destination",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE
+        );
+        if (choice != JOptionPane.YES_OPTION) return null;
+        confirmedCustomBaseUrl = base;
+        return ApiEndpoint.confirmed(base);
     }
 
     Destination currentDestination() {
@@ -77,7 +116,11 @@ final class Burp2PostmanPanel {
     }
 
     RequestConverter.Options requestOptions() {
-        return new RequestConverter.Options(preserveHost.isSelected(), removeTransportHeaders.isSelected());
+        return new RequestConverter.Options(
+                preserveHost.isSelected(),
+                removeTransportHeaders.isSelected(),
+                (RequestConverter.HeaderFormat) headerFormat.getSelectedItem()
+        );
     }
 
     DestinationDialog.Selection chooseDestination(Component parent) {
@@ -87,18 +130,19 @@ final class Burp2PostmanPanel {
                     "Burp2Postman", JOptionPane.WARNING_MESSAGE);
             return null;
         }
-        final String base;
+        final ApiEndpoint endpoint;
         try {
-            base = baseUrl();
+            endpoint = approvedEndpoint(parent);
         } catch (RuntimeException ex) {
             showError(ex);
             return null;
         }
+        if (endpoint == null) return null;
         DestinationDialog dialog = new DestinationDialog(
                 SwingUtilities.getWindowAncestor(parent),
                 client,
                 executor,
-                base,
+                endpoint,
                 key,
                 currentDestination
         );
@@ -139,6 +183,19 @@ final class Burp2PostmanPanel {
         c.gridy = 0;
 
         addRow(configuration, c, "API base URL", baseUrlField);
+
+        c.gridx = 1;
+        c.weightx = 1;
+        configuration.add(customEndpoint, c);
+        c.gridy++;
+
+        JPanel keyDestination = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        keyDestination.add(new JLabel("X-API-Key destination hostname: "));
+        keyDestination.add(apiKeyDestinationHost);
+        c.gridx = 1;
+        configuration.add(keyDestination, c);
+        c.gridy++;
+
         addRow(configuration, c, "Postman API key", apiKeyField);
 
         c.gridx = 1;
@@ -166,6 +223,8 @@ final class Burp2PostmanPanel {
         c.gridx = 1;
         configuration.add(options, c);
         c.gridy++;
+
+        addRow(configuration, c, "Header payload format", headerFormat);
 
         JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         statusPanel.add(new JLabel("Status:"));
@@ -210,6 +269,36 @@ final class Burp2PostmanPanel {
         });
         preserveHost.addActionListener(e -> store.preserveHostHeader(preserveHost.isSelected()));
         removeTransportHeaders.addActionListener(e -> store.removeTransportHeaders(removeTransportHeaders.isSelected()));
+        headerFormat.addActionListener(e -> store.headerFormat(
+                (RequestConverter.HeaderFormat) headerFormat.getSelectedItem()));
+        customEndpoint.addActionListener(e -> {
+            confirmedCustomBaseUrl = null;
+            baseUrlField.setEnabled(customEndpoint.isSelected());
+            if (!customEndpoint.isSelected()) {
+                baseUrlField.setText(ApiEndpoint.DEFAULT_BASE_URL);
+            }
+            store.customEndpointEnabled(customEndpoint.isSelected());
+            refreshApiKeyDestinationHost();
+        });
+        baseUrlField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                confirmedCustomBaseUrl = null;
+                refreshApiKeyDestinationHost();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                confirmedCustomBaseUrl = null;
+                refreshApiKeyDestinationHost();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                confirmedCustomBaseUrl = null;
+                refreshApiKeyDestinationHost();
+            }
+        });
 
         createCollectionButton.setEnabled(false);
         createFolderButton.setEnabled(false);
@@ -218,11 +307,16 @@ final class Burp2PostmanPanel {
     }
 
     private void restoreSettings() {
-        baseUrlField.setText(store.baseUrl());
+        boolean enableCustomEndpoint = store.customEndpointEnabled();
+        customEndpoint.setSelected(enableCustomEndpoint);
+        baseUrlField.setText(enableCustomEndpoint ? store.baseUrl() : ApiEndpoint.DEFAULT_BASE_URL);
+        baseUrlField.setEnabled(enableCustomEndpoint);
+        refreshApiKeyDestinationHost();
         rememberApiKey.setSelected(store.rememberApiKey());
         apiKeyField.setText(store.apiKey());
         preserveHost.setSelected(store.preserveHostHeader());
         removeTransportHeaders.setSelected(store.removeTransportHeaders());
+        headerFormat.setSelectedItem(store.headerFormat());
         currentDestination = store.destination();
         if (currentDestination != null) {
             statusLabel.setText("Saved default: " + currentDestination.displayName());
@@ -231,29 +325,35 @@ final class Burp2PostmanPanel {
 
     private void connect() {
         final String key = apiKey();
-        final String base;
-        try {
-            base = baseUrl();
-        } catch (RuntimeException ex) {
-            showError(ex);
-            return;
-        }
         if (key.isBlank()) {
             showError(new IllegalArgumentException("Enter a Postman API key."));
             return;
         }
+        final ApiEndpoint endpoint;
+        try {
+            endpoint = approvedEndpoint(root);
+        } catch (RuntimeException ex) {
+            showError(ex);
+            return;
+        }
+        if (endpoint == null) return;
 
+        long generation = workspaceLoadGeneration.incrementAndGet();
+        collectionLoadGeneration.incrementAndGet();
+        folderLoadGeneration.incrementAndGet();
         setBusy(true, "Connecting to Postman…");
         executor.submit(() -> {
             try {
-                List<ItemRef> workspaces = client.getWorkspaces(base, key);
+                List<ItemRef> workspaces = client.getWorkspaces(endpoint, key);
                 SwingUtilities.invokeLater(() -> {
+                    if (generation != workspaceLoadGeneration.get()) return;
                     suppressSelectionEvents = true;
                     setItems(workspaceCombo, workspaces);
                     selectById(workspaceCombo, currentDestination == null ? "" : currentDestination.workspace().id());
                     suppressSelectionEvents = false;
                     setBusy(false, "Connected. " + workspaces.size() + " workspace(s) loaded.");
-                    store.baseUrl(base);
+                    store.baseUrl(endpoint.baseUrl());
+                    store.customEndpointEnabled(customEndpoint.isSelected());
                     store.rememberApiKey(rememberApiKey.isSelected());
                     store.apiKey(key);
                     createCollectionButton.setEnabled(workspaceCombo.getSelectedItem() != null);
@@ -263,6 +363,7 @@ final class Burp2PostmanPanel {
                 });
             } catch (Exception ex) {
                 SwingUtilities.invokeLater(() -> {
+                    if (generation != workspaceLoadGeneration.get()) return;
                     setBusy(false, "Connection failed");
                     showError(ex);
                 });
@@ -271,22 +372,26 @@ final class Burp2PostmanPanel {
     }
 
     private void loadCollections(ItemRef workspace) {
+        long generation = collectionLoadGeneration.incrementAndGet();
+        folderLoadGeneration.incrementAndGet();
         if (workspace == null) {
             return;
         }
-        final String base;
+        final ApiEndpoint endpoint;
         try {
-            base = baseUrl();
+            endpoint = approvedEndpoint(root);
         } catch (RuntimeException ex) {
             showError(ex);
             return;
         }
+        if (endpoint == null) return;
         final String key = apiKey();
         setStatus("Loading collections…");
         executor.submit(() -> {
             try {
-                List<ItemRef> collections = client.getCollections(base, key, workspace.id());
+                List<ItemRef> collections = client.getCollections(endpoint, key, workspace.id());
                 SwingUtilities.invokeLater(() -> {
+                    if (generation != collectionLoadGeneration.get()) return;
                     suppressSelectionEvents = true;
                     setItems(collectionCombo, collections);
                     String savedId = currentDestination != null
@@ -301,28 +406,33 @@ final class Burp2PostmanPanel {
                     if (collection != null) loadFolders(collection);
                 });
             } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> showError(ex));
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == collectionLoadGeneration.get()) showError(ex);
+                });
             }
         });
     }
 
     private void loadFolders(ItemRef collection) {
+        long generation = folderLoadGeneration.incrementAndGet();
         if (collection == null) {
             return;
         }
-        final String base;
+        final ApiEndpoint endpoint;
         try {
-            base = baseUrl();
+            endpoint = approvedEndpoint(root);
         } catch (RuntimeException ex) {
             showError(ex);
             return;
         }
+        if (endpoint == null) return;
         final String key = apiKey();
         setStatus("Loading folders…");
         executor.submit(() -> {
             try {
-                List<FolderRef> folders = client.getFolders(base, key, collection.id());
+                List<FolderRef> folders = client.getFolders(endpoint, key, collection.id());
                 SwingUtilities.invokeLater(() -> {
+                    if (generation != folderLoadGeneration.get()) return;
                     suppressSelectionEvents = true;
                     folderCombo.removeAllItems();
                     folderCombo.addItem(COLLECTION_ROOT);
@@ -335,7 +445,9 @@ final class Burp2PostmanPanel {
                     setStatus("Ready. " + folders.size() + " folder(s) loaded.");
                 });
             } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> showError(ex));
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == folderLoadGeneration.get()) showError(ex);
+                });
             }
         });
     }
@@ -364,6 +476,7 @@ final class Burp2PostmanPanel {
         if (persist) {
             store.destination(destination);
             store.baseUrl(baseUrl());
+            store.customEndpointEnabled(customEndpoint.isSelected());
             store.rememberApiKey(rememberApiKey.isSelected());
             store.apiKey(apiKey());
         }
@@ -380,18 +493,19 @@ final class Burp2PostmanPanel {
                 JOptionPane.PLAIN_MESSAGE);
         if (name == null || name.isBlank()) return;
 
-        final String base;
+        final ApiEndpoint endpoint;
         try {
-            base = baseUrl();
+            endpoint = approvedEndpoint(root);
         } catch (RuntimeException ex) {
             showError(ex);
             return;
         }
+        if (endpoint == null) return;
         final String key = apiKey();
         setStatus("Creating collection…");
         executor.submit(() -> {
             try {
-                ItemRef created = client.createCollection(base, key, workspace.id(), name.trim());
+                ItemRef created = client.createCollection(endpoint, key, workspace.id(), name.trim());
                 SwingUtilities.invokeLater(() -> {
                     appendLog("Created collection: " + created.name());
                     loadCollections(workspace);
@@ -413,18 +527,19 @@ final class Burp2PostmanPanel {
                 JOptionPane.PLAIN_MESSAGE);
         if (name == null || name.isBlank()) return;
 
-        final String base;
+        final ApiEndpoint endpoint;
         try {
-            base = baseUrl();
+            endpoint = approvedEndpoint(root);
         } catch (RuntimeException ex) {
             showError(ex);
             return;
         }
+        if (endpoint == null) return;
         final String key = apiKey();
         setStatus("Creating folder…");
         executor.submit(() -> {
             try {
-                client.createFolder(base, key, collection.id(),
+                client.createFolder(endpoint, key, collection.id(),
                         parent == null ? "" : parent.id(), name.trim());
                 SwingUtilities.invokeLater(() -> {
                     appendLog("Created folder: " + name.trim());
@@ -449,6 +564,18 @@ final class Burp2PostmanPanel {
         collectionCombo.setEnabled(!busy);
         folderCombo.setEnabled(!busy);
         setStatus(status);
+    }
+
+    private void refreshApiKeyDestinationHost() {
+        String host;
+        try {
+            host = ApiEndpoint.hostOf(customEndpoint.isSelected()
+                    ? baseUrlField.getText()
+                    : ApiEndpoint.DEFAULT_BASE_URL);
+        } catch (RuntimeException ignored) {
+            host = "(invalid URL)";
+        }
+        apiKeyDestinationHost.setText(host);
     }
 
     private static void addRow(JPanel panel, GridBagConstraints c, String label, JComponent component) {

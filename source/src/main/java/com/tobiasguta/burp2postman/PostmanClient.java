@@ -1,4 +1,4 @@
-package com.tobiasare.burp2postman;
+package com.tobiasguta.burp2postman;
 
 import java.io.IOException;
 import java.net.URI;
@@ -14,8 +14,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static com.tobiasare.burp2postman.Models.FolderRef;
-import static com.tobiasare.burp2postman.Models.ItemRef;
+import static com.tobiasguta.burp2postman.Models.FolderRef;
+import static com.tobiasguta.burp2postman.Models.ItemRef;
 
 final class PostmanClient {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
@@ -25,11 +25,13 @@ final class PostmanClient {
     PostmanClient() {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
-                .followRedirects(HttpClient.Redirect.NORMAL)
+                // Do not forward X-API-Key through redirects. A caller must
+                // explicitly configure and confirm the final API endpoint.
+                .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
     }
 
-    List<ItemRef> getWorkspaces(String baseUrl, String apiKey) throws IOException, InterruptedException {
+    List<ItemRef> getWorkspaces(ApiEndpoint endpoint, String apiKey) throws IOException, InterruptedException {
         requireApiKey(apiKey);
         List<ItemRef> results = new ArrayList<>();
         String cursor = null;
@@ -37,7 +39,7 @@ final class PostmanClient {
 
         do {
             String path = "/workspaces?limit=100" + (cursor == null ? "" : "&cursor=" + encode(cursor));
-            Map<String, Object> root = getJson(baseUrl, path, apiKey);
+            Map<String, Object> root = getJson(endpoint, path, apiKey);
             for (Object value : MiniJson.asArray(root.get("workspaces"))) {
                 Map<String, Object> item = MiniJson.asObject(value);
                 String id = firstText(item, "uid", "id");
@@ -54,7 +56,7 @@ final class PostmanClient {
         return deduplicateItems(results);
     }
 
-    List<ItemRef> getCollections(String baseUrl, String apiKey, String workspaceId)
+    List<ItemRef> getCollections(ApiEndpoint endpoint, String apiKey, String workspaceId)
             throws IOException, InterruptedException {
         requireApiKey(apiKey);
         if (workspaceId == null || workspaceId.isBlank()) {
@@ -69,7 +71,7 @@ final class PostmanClient {
         do {
             String path = "/collections?workspace=" + encode(workspaceId)
                     + "&limit=" + limit + "&offset=" + offset;
-            Map<String, Object> root = getJson(baseUrl, path, apiKey);
+            Map<String, Object> root = getJson(endpoint, path, apiKey);
             List<Object> collections = MiniJson.asArray(root.get("collections"));
             for (Object value : collections) {
                 Map<String, Object> item = MiniJson.asObject(value);
@@ -91,14 +93,14 @@ final class PostmanClient {
         return deduplicateItems(results);
     }
 
-    List<FolderRef> getFolders(String baseUrl, String apiKey, String collectionId)
+    List<FolderRef> getFolders(ApiEndpoint endpoint, String apiKey, String collectionId)
             throws IOException, InterruptedException {
         requireApiKey(apiKey);
         if (collectionId == null || collectionId.isBlank()) {
             return List.of();
         }
 
-        Map<String, Object> root = getJson(baseUrl, "/collections/" + encodePath(collectionId), apiKey);
+        Map<String, Object> root = getJson(endpoint, "/collections/" + encodePath(collectionId), apiKey);
         Map<String, Object> collection = MiniJson.asObject(root.get("collection"));
         List<FolderRef> folders = new ArrayList<>();
         collectFolders(MiniJson.asArray(collection.get("item")), "", folders);
@@ -106,7 +108,7 @@ final class PostmanClient {
         return folders;
     }
 
-    ItemRef createCollection(String baseUrl, String apiKey, String workspaceId, String name)
+    ItemRef createCollection(ApiEndpoint endpoint, String apiKey, String workspaceId, String name)
             throws IOException, InterruptedException {
         requireNonBlank(workspaceId, "Choose a workspace first.");
         requireNonBlank(name, "Collection name cannot be empty.");
@@ -124,7 +126,7 @@ final class PostmanClient {
 
         Map<String, Object> root = sendJson(
                 "POST",
-                baseUrl,
+                endpoint,
                 "/collections?workspace=" + encode(workspaceId),
                 apiKey,
                 body
@@ -137,7 +139,7 @@ final class PostmanClient {
         return new ItemRef(id, firstTextOr(created, name.trim(), "name"));
     }
 
-    FolderRef createFolder(String baseUrl, String apiKey, String collectionId, String parentFolderId, String name)
+    FolderRef createFolder(ApiEndpoint endpoint, String apiKey, String collectionId, String parentFolderId, String name)
             throws IOException, InterruptedException {
         requireNonBlank(collectionId, "Choose a collection first.");
         requireNonBlank(name, "Folder name cannot be empty.");
@@ -150,7 +152,7 @@ final class PostmanClient {
 
         Map<String, Object> root = sendJson(
                 "POST",
-                baseUrl,
+                endpoint,
                 "/collections/" + encodePath(collectionId) + "/folders",
                 apiKey,
                 body
@@ -168,7 +170,7 @@ final class PostmanClient {
     }
 
     String createRequest(
-            String baseUrl,
+            ApiEndpoint endpoint,
             String apiKey,
             String collectionId,
             String folderId,
@@ -179,42 +181,62 @@ final class PostmanClient {
         if (folderId != null && !folderId.isBlank()) {
             path += "?folderId=" + encode(folderId);
         }
-        Map<String, Object> root = sendJson("POST", baseUrl, path, apiKey, request);
+        Map<String, Object> root = sendJson("POST", endpoint, path, apiKey, request);
         Map<String, Object> data = MiniJson.asObject(root.get("data"));
         return firstText(data, "uid", "id", "model_id").isBlank()
                 ? firstText(root, "uid", "model_id", "id")
                 : firstText(data, "uid", "id", "model_id");
     }
 
-    private Map<String, Object> getJson(String baseUrl, String path, String apiKey)
+    Map<String, Object> getCollectionDocument(ApiEndpoint endpoint, String apiKey, String collectionId)
             throws IOException, InterruptedException {
-        HttpRequest request = requestBuilder(baseUrl, path, apiKey).GET().build();
+        requireNonBlank(collectionId, "Choose a collection first.");
+        return getJson(endpoint, "/collections/" + encodePath(collectionId), apiKey);
+    }
+
+    void deleteRequest(ApiEndpoint endpoint, String apiKey, String collectionId, String requestId)
+            throws IOException, InterruptedException {
+        requireNonBlank(collectionId, "Choose a collection first.");
+        requireNonBlank(requestId, "Request ID is required.");
+        HttpRequest request = requestBuilder(
+                endpoint,
+                "/collections/" + encodePath(collectionId) + "/requests/" + encodePath(requestId),
+                apiKey
+        ).DELETE().build();
+        execute(request);
+    }
+
+    private Map<String, Object> getJson(ApiEndpoint endpoint, String path, String apiKey)
+            throws IOException, InterruptedException {
+        HttpRequest request = requestBuilder(endpoint, path, apiKey).GET().build();
         return execute(request);
     }
 
     private Map<String, Object> sendJson(
             String method,
-            String baseUrl,
+            ApiEndpoint endpoint,
             String path,
             String apiKey,
             Map<String, Object> body
     ) throws IOException, InterruptedException {
         String payload = MiniJson.stringify(body);
-        HttpRequest request = requestBuilder(baseUrl, path, apiKey)
+        HttpRequest request = requestBuilder(endpoint, path, apiKey)
                 .header("Content-Type", "application/json")
                 .method(method, HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
                 .build();
         return execute(request);
     }
 
-    private HttpRequest.Builder requestBuilder(String baseUrl, String path, String apiKey) {
+    private HttpRequest.Builder requestBuilder(ApiEndpoint endpoint, String path, String apiKey) {
         requireApiKey(apiKey);
-        String normalized = normalizeBaseUrl(baseUrl);
-        return HttpRequest.newBuilder(URI.create(normalized + path))
+        if (endpoint == null) {
+            throw new IllegalArgumentException("Postman API endpoint is required.");
+        }
+        return HttpRequest.newBuilder(URI.create(endpoint.baseUrl() + path))
                 .timeout(REQUEST_TIMEOUT)
                 .header("Accept", "application/json")
                 .header("X-API-Key", apiKey.trim())
-                .header("User-Agent", "PostmanRuntime/7.41.2");
+                .header("User-Agent", "Burp2Postman/0.2.0 PostmanRuntime-compatible");
     }
 
     private Map<String, Object> execute(HttpRequest request) throws IOException, InterruptedException {
@@ -277,26 +299,11 @@ final class PostmanClient {
     }
 
     static String normalizeBaseUrl(String baseUrl) {
-        String value = baseUrl == null ? "" : baseUrl.trim();
-        if (value.isBlank()) {
-            value = "https://api.postman.com";
-        }
-        while (value.endsWith("/")) {
-            value = value.substring(0, value.length() - 1);
-        }
-        if (!value.startsWith("https://")) {
-            throw new IllegalArgumentException("Postman API base URL must use HTTPS.");
-        }
-        URI uri;
-        try {
-            uri = URI.create(value);
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Postman API base URL is invalid.", e);
-        }
-        if (uri.getHost() == null || uri.getHost().isBlank()) {
-            throw new IllegalArgumentException("Postman API base URL must contain a valid host.");
-        }
-        return value;
+        return ApiEndpoint.normalize(baseUrl);
+    }
+
+    HttpClient.Redirect redirectPolicy() {
+        return httpClient.followRedirects();
     }
 
     private static String encode(String value) {

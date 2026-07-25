@@ -1,4 +1,4 @@
-package com.tobiasare.burp2postman;
+package com.tobiasguta.burp2postman;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -6,10 +6,11 @@ import java.awt.*;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicLong;
 
-import static com.tobiasare.burp2postman.Models.Destination;
-import static com.tobiasare.burp2postman.Models.FolderRef;
-import static com.tobiasare.burp2postman.Models.ItemRef;
+import static com.tobiasguta.burp2postman.Models.Destination;
+import static com.tobiasguta.burp2postman.Models.FolderRef;
+import static com.tobiasguta.burp2postman.Models.ItemRef;
 
 final class DestinationDialog {
     private static final FolderRef COLLECTION_ROOT = new FolderRef("", "Collection root", "(Collection root)");
@@ -19,7 +20,7 @@ final class DestinationDialog {
     private final JDialog dialog;
     private final PostmanClient client;
     private final ExecutorService executor;
-    private final String baseUrl;
+    private final ApiEndpoint endpoint;
     private final String apiKey;
     private final Destination initial;
 
@@ -33,18 +34,21 @@ final class DestinationDialog {
 
     private volatile boolean suppressEvents;
     private volatile Selection result;
+    private final AtomicLong workspaceLoadGeneration = new AtomicLong();
+    private final AtomicLong collectionLoadGeneration = new AtomicLong();
+    private final AtomicLong folderLoadGeneration = new AtomicLong();
 
     DestinationDialog(
             Window owner,
             PostmanClient client,
             ExecutorService executor,
-            String baseUrl,
+            ApiEndpoint endpoint,
             String apiKey,
             Destination initial
     ) {
         this.client = client;
         this.executor = executor;
-        this.baseUrl = baseUrl;
+        this.endpoint = endpoint;
         this.apiKey = apiKey;
         this.initial = initial;
         this.dialog = new JDialog(owner, "Send to Postman", Dialog.ModalityType.APPLICATION_MODAL);
@@ -107,10 +111,14 @@ final class DestinationDialog {
     }
 
     private void loadWorkspaces() {
+        long generation = workspaceLoadGeneration.incrementAndGet();
+        collectionLoadGeneration.incrementAndGet();
+        folderLoadGeneration.incrementAndGet();
         executor.submit(() -> {
             try {
-                List<ItemRef> workspaces = client.getWorkspaces(baseUrl, apiKey);
+                List<ItemRef> workspaces = client.getWorkspaces(endpoint, apiKey);
                 SwingUtilities.invokeLater(() -> {
+                    if (generation != workspaceLoadGeneration.get()) return;
                     suppressEvents = true;
                     replace(workspaceCombo, workspaces);
                     selectItem(workspaceCombo, initial == null ? "" : initial.workspace().id());
@@ -121,12 +129,16 @@ final class DestinationDialog {
                     if (workspace != null) loadCollections(workspace);
                 });
             } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> fail(ex));
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == workspaceLoadGeneration.get()) fail(ex);
+                });
             }
         });
     }
 
     private void loadCollections(ItemRef workspace) {
+        long generation = collectionLoadGeneration.incrementAndGet();
+        folderLoadGeneration.incrementAndGet();
         if (workspace == null) return;
         collectionCombo.setEnabled(false);
         folderCombo.setEnabled(false);
@@ -135,8 +147,9 @@ final class DestinationDialog {
 
         executor.submit(() -> {
             try {
-                List<ItemRef> collections = client.getCollections(baseUrl, apiKey, workspace.id());
+                List<ItemRef> collections = client.getCollections(endpoint, apiKey, workspace.id());
                 SwingUtilities.invokeLater(() -> {
+                    if (generation != collectionLoadGeneration.get()) return;
                     suppressEvents = true;
                     replace(collectionCombo, collections);
                     String initialId = initial != null && Objects.equals(initial.workspace().id(), workspace.id())
@@ -150,20 +163,24 @@ final class DestinationDialog {
                     if (collection != null) loadFolders(collection);
                 });
             } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> fail(ex));
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == collectionLoadGeneration.get()) fail(ex);
+                });
             }
         });
     }
 
     private void loadFolders(ItemRef collection) {
+        long generation = folderLoadGeneration.incrementAndGet();
         if (collection == null) return;
         folderCombo.setEnabled(false);
         status.setText("Loading folders…");
 
         executor.submit(() -> {
             try {
-                List<FolderRef> folders = client.getFolders(baseUrl, apiKey, collection.id());
+                List<FolderRef> folders = client.getFolders(endpoint, apiKey, collection.id());
                 SwingUtilities.invokeLater(() -> {
+                    if (generation != folderLoadGeneration.get()) return;
                     suppressEvents = true;
                     folderCombo.removeAllItems();
                     folderCombo.addItem(COLLECTION_ROOT);
@@ -177,7 +194,9 @@ final class DestinationDialog {
                     status.setText("Ready.");
                 });
             } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> fail(ex));
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == folderLoadGeneration.get()) fail(ex);
+                });
             }
         });
     }

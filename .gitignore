@@ -1,0 +1,41 @@
+# IDE and editor metadata
+/.idea/
+/.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Local agent/tool state
+/.agents/
+/.codex/
+
+# Java and Maven build output
+**/target/
+**/build/
+**/dist/
+*.class
+
+# Locally built distribution artifacts
+/Burp2Postman.jar
+
+# Logs, crash dumps, and temporary files
+*.log
+hs_err_pid*
+replay_pid*
+*.tmp
+*.swp
+*~
+
+# Local secrets and overrides
+.env
+.env.*
+!.env.example
+
+# Burp project files can contain captured traffic and credentials
+*.burp
+*.burp-project
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

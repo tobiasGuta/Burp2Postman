@@ -1,4 +1,4 @@
-package com.tobiasare.burp2postman;
+package com.tobiasguta.burp2postman;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
@@ -17,8 +17,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static com.tobiasare.burp2postman.Models.Destination;
-import static com.tobiasare.burp2postman.Models.SendResult;
+import static com.tobiasguta.burp2postman.Models.Destination;
+import static com.tobiasguta.burp2postman.Models.SendResult;
 
 public final class Burp2PostmanExtension implements BurpExtension {
     private MontoyaApi api;
@@ -51,7 +51,7 @@ public final class Burp2PostmanExtension implements BurpExtension {
 
         api.userInterface().registerContextMenuItemsProvider(new MenuProvider());
         api.extension().registerUnloadingHandler(() -> executor.shutdownNow());
-        api.logging().logToOutput("Burp2Postman 0.1.1 loaded.");
+        api.logging().logToOutput("Burp2Postman 0.2.0 loaded.");
     }
 
     private void initializeUi(ConfigStore store) {
@@ -84,13 +84,14 @@ public final class Burp2PostmanExtension implements BurpExtension {
             return;
         }
 
-        final String baseUrl;
+        final ApiEndpoint endpoint;
         try {
-            baseUrl = panel.baseUrl();
+            endpoint = panel.approvedEndpoint(parent);
         } catch (RuntimeException e) {
             JOptionPane.showMessageDialog(parent, e.getMessage(), "Burp2Postman", JOptionPane.ERROR_MESSAGE);
             return;
         }
+        if (endpoint == null) return;
         final RequestConverter.Options options = panel.requestOptions();
 
         panel.setStatus("Sending " + requests.size() + " request(s) to Postman…");
@@ -106,7 +107,7 @@ public final class Burp2PostmanExtension implements BurpExtension {
                         ? name : fallbackName;
                 try {
                     String postmanId = postmanClient.createRequest(
-                            baseUrl,
+                            endpoint,
                             apiKey,
                             destination.collection().id(),
                             destination.folderId(),
@@ -167,11 +168,18 @@ public final class Burp2PostmanExtension implements BurpExtension {
             sanitized.setEnabled(destination != null);
             sanitized.addActionListener(e -> sendRequests(requests, panel.currentDestination(), true, menu));
 
-            JMenuItem choose = new JMenuItem("Choose destination and send…");
-            choose.addActionListener(e -> {
+            JMenuItem chooseExact = new JMenuItem("Choose destination and send exact…");
+            chooseExact.addActionListener(e -> {
                 DestinationDialog.Selection selection = panel.chooseDestination(menu);
                 if (selection != null) {
                     sendRequests(requests, selection.destination(), false, menu);
+                }
+            });
+            JMenuItem chooseSanitized = new JMenuItem("Choose destination and send sanitized…");
+            chooseSanitized.addActionListener(e -> {
+                DestinationDialog.Selection selection = panel.chooseDestination(menu);
+                if (selection != null) {
+                    sendRequests(requests, selection.destination(), true, menu);
                 }
             });
 
@@ -183,7 +191,8 @@ public final class Burp2PostmanExtension implements BurpExtension {
             menu.add(exact);
             menu.add(sanitized);
             menu.addSeparator();
-            menu.add(choose);
+            menu.add(chooseExact);
+            menu.add(chooseSanitized);
             menu.add(configure);
             return List.of(menu);
         }

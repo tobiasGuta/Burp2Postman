@@ -1,4 +1,4 @@
-package com.tobiasare.burp2postman;
+package com.tobiasguta.burp2postman;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

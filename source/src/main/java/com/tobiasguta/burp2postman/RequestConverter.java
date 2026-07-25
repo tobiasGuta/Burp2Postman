@@ -1,4 +1,4 @@
-package com.tobiasare.burp2postman;
+package com.tobiasguta.burp2postman;
 
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -13,6 +13,22 @@ import java.util.Map;
 import java.util.Set;
 
 final class RequestConverter {
+    enum HeaderFormat {
+        STRUCTURED("Structured array (recommended)"),
+        LEGACY_STRING("Legacy newline-separated string");
+
+        private final String label;
+
+        HeaderFormat(String label) {
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
     private static final Set<String> TRANSPORT_HEADERS = Set.of(
             "content-length", "transfer-encoding", "connection", "proxy-connection",
             "keep-alive", "upgrade", "http2-settings", "te", "trailer"
@@ -24,9 +40,19 @@ final class RequestConverter {
             "x-csrf-token", "x-xsrf-token", "csrf-token", "x-amz-security-token"
     );
 
-    record Options(boolean preserveHostHeader, boolean removeTransportHeaders) {
+    record Options(
+            boolean preserveHostHeader,
+            boolean removeTransportHeaders,
+            HeaderFormat headerFormat
+    ) {
+        Options {
+            if (headerFormat == null) {
+                headerFormat = HeaderFormat.STRUCTURED;
+            }
+        }
+
         static Options defaults() {
-            return new Options(true, true);
+            return new Options(true, true, HeaderFormat.STRUCTURED);
         }
     }
 
@@ -42,7 +68,8 @@ final class RequestConverter {
         result.put("method", method);
         result.put("url", url);
 
-        StringBuilder headers = new StringBuilder();
+        StringBuilder legacyHeaders = new StringBuilder();
+        List<Object> structuredHeaders = MiniJson.array();
         String contentType = "";
         for (HttpHeader header : request.headers()) {
             if (header == null) {
@@ -64,13 +91,22 @@ final class RequestConverter {
             String originalValue = safe(header.value(), "");
             String value = sanitized ? sanitizeHeader(lower, originalValue) : originalValue;
             
-            headers.append(headerName).append(": ").append(value).append("\n");
+            if (options.headerFormat() == HeaderFormat.LEGACY_STRING) {
+                legacyHeaders.append(headerName).append(": ").append(value).append("\n");
+            } else {
+                Map<String, Object> structuredHeader = MiniJson.object();
+                structuredHeader.put("key", headerName);
+                structuredHeader.put("value", value);
+                structuredHeaders.add(structuredHeader);
+            }
 
             if (lower.equals("content-type")) {
                 contentType = originalValue.toLowerCase(Locale.ROOT);
             }
         }
-        result.put("headers", headers.toString());
+        result.put("headers", options.headerFormat() == HeaderFormat.LEGACY_STRING
+                ? legacyHeaders.toString()
+                : structuredHeaders);
 
         addQueryParameters(result, url);
         addBody(result, safe(request.bodyToString(), ""), contentType, sanitized);
@@ -171,12 +207,16 @@ final class RequestConverter {
         return "{{authorization}}";
     }
 
-    private static String sanitizeBody(String body, String contentType) {
+    static String sanitizeBody(String body, String contentType) {
         if (contentType.contains("json")) {
-            return body.replaceAll(
-                    "(?i)(\\\"(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|password|passwd|secret|session|authorization)\\\"\\s*:\\s*)\\\"[^\\\"]*\\\"",
-                    "$1\"{{secret}}\""
-            );
+            try {
+                Object parsed = MiniJson.parse(body);
+                sanitizeJsonValue(parsed);
+                return MiniJson.stringify(parsed);
+            } catch (IllegalArgumentException ignored) {
+                // Preserve best-effort protection for malformed captured JSON.
+                return sanitizeMalformedJson(body);
+            }
         }
         if (contentType.contains("application/x-www-form-urlencoded")) {
             StringBuilder rebuilt = new StringBuilder();
@@ -184,7 +224,7 @@ final class RequestConverter {
                 if (rebuilt.length() > 0) rebuilt.append('&');
                 String[] parts = pair.split("=", 2);
                 String decodedKey = decode(parts[0]);
-                String lower = decodedKey.toLowerCase(Locale.ROOT);
+                String lower = normalizeKey(decodedKey);
                 rebuilt.append(parts[0]);
                 if (parts.length == 2) {
                     rebuilt.append('=');
@@ -197,9 +237,42 @@ final class RequestConverter {
         return body;
     }
 
+    private static void sanitizeJsonValue(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (!(entry.getKey() instanceof String key)) {
+                    continue;
+                }
+                if (isSensitiveKey(normalizeKey(key))) {
+                    @SuppressWarnings("unchecked")
+                    Map<Object, Object> mutable = (Map<Object, Object>) map;
+                    mutable.put(key, "{{secret}}");
+                } else {
+                    sanitizeJsonValue(entry.getValue());
+                }
+            }
+        } else if (value instanceof List<?> list) {
+            for (Object item : list) {
+                sanitizeJsonValue(item);
+            }
+        }
+    }
+
+    private static String sanitizeMalformedJson(String body) {
+        return body.replaceAll(
+                "(?i)(\\\"(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|password|passwd|secret|session|authorization)\\\"\\s*:\\s*)"
+                        + "(?:\\\"(?:\\\\.|[^\\\"\\\\])*\\\"|-?(?:\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)|true|false|null)",
+                "$1\"{{secret}}\""
+        );
+    }
+
+    private static String normalizeKey(String key) {
+        return key.toLowerCase(Locale.ROOT).replace("-", "").replace("_", "").replace(" ", "");
+    }
+
     private static boolean isSensitiveKey(String lower) {
         return lower.contains("token") || lower.contains("password") || lower.contains("passwd")
-                || lower.contains("secret") || lower.contains("api_key") || lower.contains("apikey")
+                || lower.contains("secret") || lower.contains("apikey")
                 || lower.contains("session") || lower.contains("authorization");
     }
 
