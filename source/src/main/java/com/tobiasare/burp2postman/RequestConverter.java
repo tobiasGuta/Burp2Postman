@@ -126,7 +126,7 @@ final class RequestConverter {
             return;
         }
 
-        // Multipart bodies are intentionally preserved as raw bytes-as-text in v0.1.0.
+        // Multipart bodies are intentionally preserved as raw bytes-as-text in v0.1.1.
         // Postman cannot reconstruct the original local file path from a Burp-captured upload.
         result.put("dataMode", "raw");
         result.put("rawModeData", finalBody);

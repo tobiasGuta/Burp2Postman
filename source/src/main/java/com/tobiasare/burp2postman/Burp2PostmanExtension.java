@@ -51,7 +51,7 @@ public final class Burp2PostmanExtension implements BurpExtension {
 
         api.userInterface().registerContextMenuItemsProvider(new MenuProvider());
         api.extension().registerUnloadingHandler(() -> executor.shutdownNow());
-        api.logging().logToOutput("Burp2Postman 0.1.0 loaded.");
+        api.logging().logToOutput("Burp2Postman 0.1.1 loaded.");
     }
 
     private void initializeUi(ConfigStore store) {

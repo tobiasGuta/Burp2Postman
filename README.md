@@ -62,7 +62,7 @@ By default it removes headers that Postman should recalculate, including `Conten
 
 ### Multipart limitation
 
-Version 0.1.0 preserves captured multipart bodies as raw body data. Burp has the transmitted file bytes but not necessarily the original local file path that Postman needs for a normal file picker. Multipart requests containing files may therefore need manual adjustment in Postman.
+Version 0.1.1 preserves captured multipart bodies as raw body data. Burp has the transmitted file bytes but not necessarily the original local file path that Postman needs for a normal file picker. Multipart requests containing files may therefore need manual adjustment in Postman.
 
 ## Security and privacy
 

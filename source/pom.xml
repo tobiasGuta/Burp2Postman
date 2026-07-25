@@ -6,7 +6,7 @@
 
     <groupId>com.tobiasare</groupId>
     <artifactId>burp2postman</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
     <name>Burp2Postman</name>
     <description>Send selected Burp Suite HTTP requests directly to a chosen Postman workspace, collection, and folder.</description>
 
