@@ -10,6 +10,8 @@
 - Replaced regex-only JSON sanitization with recursive parsed-JSON sanitization, retaining regex fallback for malformed captures.
 - Added unit tests, an opt-in live Postman header compatibility test, and GitHub Actions JAR builds/releases.
 - Renamed the Java/Maven namespace from `com.tobiasare` to `com.tobiasguta`.
+- Sanitized sensitive query values in both the raw URL and structured query payload while preserving literal `+` characters.
+- Bound saved destinations to their originating API endpoint and invalidate or reject stale cross-endpoint destinations.
 
 ## 0.1.1 - 2026-07-25
 

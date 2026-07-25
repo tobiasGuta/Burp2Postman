@@ -209,7 +209,7 @@ final class DestinationDialog {
             status.setText("Choose a workspace and collection.");
             return;
         }
-        Destination destination = new Destination(workspace, collection,
+        Destination destination = new Destination(endpoint.baseUrl(), workspace, collection,
                 folder == null || folder.id().isBlank() ? null : folder);
         result = new Selection(destination, makeDefault.isSelected());
         dialog.dispose();

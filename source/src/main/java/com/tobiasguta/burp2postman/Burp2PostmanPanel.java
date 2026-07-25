@@ -49,7 +49,9 @@ final class Burp2PostmanPanel {
     private final JTextArea logArea = new JTextArea();
 
     private volatile boolean suppressSelectionEvents;
+    private volatile boolean suppressEndpointEvents;
     private volatile Destination currentDestination;
+    private volatile String connectedEndpointBaseUrl;
     private volatile String confirmedCustomBaseUrl;
     private final AtomicLong workspaceLoadGeneration = new AtomicLong();
     private final AtomicLong collectionLoadGeneration = new AtomicLong();
@@ -112,7 +114,13 @@ final class Burp2PostmanPanel {
     }
 
     Destination currentDestination() {
-        return currentDestination;
+        Destination destination = currentDestination;
+        if (destination == null) return null;
+        try {
+            return destination.endpointBaseUrl().equals(baseUrl()) ? destination : null;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     RequestConverter.Options requestOptions() {
@@ -144,7 +152,7 @@ final class Burp2PostmanPanel {
                 executor,
                 endpoint,
                 key,
-                currentDestination
+                currentDestination()
         );
         DestinationDialog.Selection selection = dialog.showDialog();
         if (selection != null && selection.makeDefault()) {
@@ -273,30 +281,33 @@ final class Burp2PostmanPanel {
                 (RequestConverter.HeaderFormat) headerFormat.getSelectedItem()));
         customEndpoint.addActionListener(e -> {
             confirmedCustomBaseUrl = null;
-            baseUrlField.setEnabled(customEndpoint.isSelected());
-            if (!customEndpoint.isSelected()) {
-                baseUrlField.setText(ApiEndpoint.DEFAULT_BASE_URL);
+            suppressEndpointEvents = true;
+            try {
+                baseUrlField.setEnabled(customEndpoint.isSelected());
+                if (!customEndpoint.isSelected()) {
+                    baseUrlField.setText(ApiEndpoint.DEFAULT_BASE_URL);
+                }
+            } finally {
+                suppressEndpointEvents = false;
             }
             store.customEndpointEnabled(customEndpoint.isSelected());
             refreshApiKeyDestinationHost();
+            endpointConfigurationChanged();
         });
         baseUrlField.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent e) {
-                confirmedCustomBaseUrl = null;
-                refreshApiKeyDestinationHost();
+                endpointTextChanged();
             }
 
             @Override
             public void removeUpdate(DocumentEvent e) {
-                confirmedCustomBaseUrl = null;
-                refreshApiKeyDestinationHost();
+                endpointTextChanged();
             }
 
             @Override
             public void changedUpdate(DocumentEvent e) {
-                confirmedCustomBaseUrl = null;
-                refreshApiKeyDestinationHost();
+                endpointTextChanged();
             }
         });
 
@@ -308,9 +319,14 @@ final class Burp2PostmanPanel {
 
     private void restoreSettings() {
         boolean enableCustomEndpoint = store.customEndpointEnabled();
-        customEndpoint.setSelected(enableCustomEndpoint);
-        baseUrlField.setText(enableCustomEndpoint ? store.baseUrl() : ApiEndpoint.DEFAULT_BASE_URL);
-        baseUrlField.setEnabled(enableCustomEndpoint);
+        suppressEndpointEvents = true;
+        try {
+            customEndpoint.setSelected(enableCustomEndpoint);
+            baseUrlField.setText(enableCustomEndpoint ? store.baseUrl() : ApiEndpoint.DEFAULT_BASE_URL);
+            baseUrlField.setEnabled(enableCustomEndpoint);
+        } finally {
+            suppressEndpointEvents = false;
+        }
         refreshApiKeyDestinationHost();
         rememberApiKey.setSelected(store.rememberApiKey());
         apiKeyField.setText(store.apiKey());
@@ -318,6 +334,16 @@ final class Burp2PostmanPanel {
         removeTransportHeaders.setSelected(store.removeTransportHeaders());
         headerFormat.setSelectedItem(store.headerFormat());
         currentDestination = store.destination();
+        try {
+            if (currentDestination != null
+                    && !currentDestination.endpointBaseUrl().equals(baseUrl())) {
+                currentDestination = null;
+                store.destination(null);
+            }
+        } catch (RuntimeException ignored) {
+            currentDestination = null;
+            store.destination(null);
+        }
         if (currentDestination != null) {
             statusLabel.setText("Saved default: " + currentDestination.displayName());
         }
@@ -356,6 +382,7 @@ final class Burp2PostmanPanel {
                     store.customEndpointEnabled(customEndpoint.isSelected());
                     store.rememberApiKey(rememberApiKey.isSelected());
                     store.apiKey(key);
+                    connectedEndpointBaseUrl = endpoint.baseUrl();
                     createCollectionButton.setEnabled(workspaceCombo.getSelectedItem() != null);
                     ItemRef workspace = selected(workspaceCombo);
                     if (workspace != null) loadCollections(workspace);
@@ -460,7 +487,13 @@ final class Burp2PostmanPanel {
             showError(new IllegalStateException("Choose a workspace and collection first."));
             return;
         }
-        Destination destination = new Destination(workspace, collection,
+        if (connectedEndpointBaseUrl == null
+                || !connectedEndpointBaseUrl.equals(baseUrl())) {
+            showError(new IllegalStateException(
+                    "Reconnect and load a destination from the current API endpoint first."));
+            return;
+        }
+        Destination destination = new Destination(connectedEndpointBaseUrl, workspace, collection,
                 folder == null || folder.id().isBlank() ? null : folder);
         try {
             applyDestination(destination, true);
@@ -472,6 +505,10 @@ final class Burp2PostmanPanel {
     }
 
     private void applyDestination(Destination destination, boolean persist) {
+        if (!destination.endpointBaseUrl().equals(baseUrl())) {
+            throw new IllegalArgumentException(
+                    "The destination belongs to a different API endpoint. Reconnect and select it again.");
+        }
         currentDestination = destination;
         if (persist) {
             store.destination(destination);
@@ -507,6 +544,7 @@ final class Burp2PostmanPanel {
             try {
                 ItemRef created = client.createCollection(endpoint, key, workspace.id(), name.trim());
                 SwingUtilities.invokeLater(() -> {
+                    if (!isCurrentEndpoint(endpoint)) return;
                     appendLog("Created collection: " + created.name());
                     loadCollections(workspace);
                 });
@@ -542,6 +580,7 @@ final class Burp2PostmanPanel {
                 client.createFolder(endpoint, key, collection.id(),
                         parent == null ? "" : parent.id(), name.trim());
                 SwingUtilities.invokeLater(() -> {
+                    if (!isCurrentEndpoint(endpoint)) return;
                     appendLog("Created folder: " + name.trim());
                     loadFolders(collection);
                 });
@@ -576,6 +615,52 @@ final class Burp2PostmanPanel {
             host = "(invalid URL)";
         }
         apiKeyDestinationHost.setText(host);
+    }
+
+    void invalidateDestinationForEndpointMismatch() {
+        endpointConfigurationChanged();
+    }
+
+    private void endpointTextChanged() {
+        confirmedCustomBaseUrl = null;
+        refreshApiKeyDestinationHost();
+        if (!suppressEndpointEvents) {
+            endpointConfigurationChanged();
+        }
+    }
+
+    private void endpointConfigurationChanged() {
+        workspaceLoadGeneration.incrementAndGet();
+        collectionLoadGeneration.incrementAndGet();
+        folderLoadGeneration.incrementAndGet();
+        connectedEndpointBaseUrl = null;
+        currentDestination = null;
+        store.destination(null);
+
+        suppressSelectionEvents = true;
+        try {
+            workspaceCombo.removeAllItems();
+            collectionCombo.removeAllItems();
+            folderCombo.removeAllItems();
+        } finally {
+            suppressSelectionEvents = false;
+        }
+        createCollectionButton.setEnabled(false);
+        createFolderButton.setEnabled(false);
+        saveButton.setEnabled(false);
+        connectButton.setEnabled(true);
+        workspaceCombo.setEnabled(false);
+        collectionCombo.setEnabled(false);
+        folderCombo.setEnabled(false);
+        setStatus("Endpoint changed. Connect and select a destination.");
+    }
+
+    private boolean isCurrentEndpoint(ApiEndpoint endpoint) {
+        try {
+            return endpoint != null && endpoint.baseUrl().equals(baseUrl());
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static void addRow(JPanel panel, GridBagConstraints c, String label, JComponent component) {

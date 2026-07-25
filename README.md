@@ -55,6 +55,7 @@ Burp2Postman transfers:
 - Full URL
 - Query parameters
 - Duplicate and custom headers
+- Duplicate query parameters, with sensitive query values replaced in both the URL and structured query data when sanitized mode is selected
 - Cookies and authorization headers in exact mode
 - Raw JSON, XML, HTML, JavaScript, text, and GraphQL-style payloads
 - URL-encoded form fields
@@ -81,6 +82,7 @@ Direct sending uses the Postman cloud API. An exact send may upload session cook
 - Enabling **Remember API key** stores it through Burp's extension preferences. Treat the Burp user configuration and project environment as sensitive.
 - The API endpoint is locked to `api.postman.com` by default. A custom endpoint must be enabled under **Advanced**, shows the exact hostname that will receive `X-API-Key`, and requires explicit confirmation before first use in the current configuration.
 - Authenticated API requests do not follow redirects. Configure and confirm the final HTTPS endpoint directly.
+- Saved destinations include the API endpoint where they were loaded. Changing endpoints clears the destination selectors and requires reconnecting; sends are also rejected if a stale destination does not match the current endpoint.
 - Response bodies are not uploaded by this version.
 
 ## Build from source

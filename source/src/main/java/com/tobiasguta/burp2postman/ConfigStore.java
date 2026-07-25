@@ -89,9 +89,12 @@ final class ConfigStore {
     }
 
     Destination destination() {
+        String endpointBaseUrl = get("destinationEndpointBaseUrl");
         String workspaceId = get("workspaceId");
         String collectionId = get("collectionId");
-        if (workspaceId == null || workspaceId.isBlank() || collectionId == null || collectionId.isBlank()) {
+        if (endpointBaseUrl == null || endpointBaseUrl.isBlank()
+                || workspaceId == null || workspaceId.isBlank()
+                || collectionId == null || collectionId.isBlank()) {
             return null;
         }
 
@@ -102,7 +105,11 @@ final class ConfigStore {
                 ? null
                 : new FolderRef(folderId, valueOrDefault(get("folderName"), folderId),
                 valueOrDefault(get("folderPath"), valueOrDefault(get("folderName"), folderId)));
-        return new Destination(workspace, collection, folder);
+        try {
+            return new Destination(endpointBaseUrl, workspace, collection, folder);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
     }
 
     void destination(Destination destination) {
@@ -111,6 +118,7 @@ final class ConfigStore {
             return;
         }
 
+        set("destinationEndpointBaseUrl", destination.endpointBaseUrl());
         set("workspaceId", destination.workspace().id());
         set("workspaceName", destination.workspace().name());
         set("collectionId", destination.collection().id());
@@ -128,7 +136,7 @@ final class ConfigStore {
 
     private void clearDestination() {
         for (String key : new String[]{
-                "workspaceId", "workspaceName", "collectionId", "collectionName",
+                "destinationEndpointBaseUrl", "workspaceId", "workspaceName", "collectionId", "collectionName",
                 "folderId", "folderName", "folderPath"
         }) {
             preferences.deleteString(PREFIX + key);

@@ -92,6 +92,19 @@ public final class Burp2PostmanExtension implements BurpExtension {
             return;
         }
         if (endpoint == null) return;
+        if (!destination.isFor(endpoint)) {
+            JOptionPane.showMessageDialog(
+                    parent,
+                    "The selected destination belongs to a different API endpoint.\n\n"
+                            + "Destination endpoint: " + destination.endpointBaseUrl() + "\n"
+                            + "Current endpoint: " + endpoint.baseUrl() + "\n\n"
+                            + "Reconnect and select a destination from the current endpoint.",
+                    "Burp2Postman",
+                    JOptionPane.ERROR_MESSAGE
+            );
+            panel.invalidateDestinationForEndpointMismatch();
+            return;
+        }
         final RequestConverter.Options options = panel.requestOptions();
 
         panel.setStatus("Sending " + requests.size() + " request(s) to Postman…");

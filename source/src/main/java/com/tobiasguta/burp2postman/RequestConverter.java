@@ -3,7 +3,6 @@ package com.tobiasguta.burp2postman;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
 
-import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -39,6 +38,8 @@ final class RequestConverter {
             "x-api-key", "api-key", "x-auth-token", "x-access-token",
             "x-csrf-token", "x-xsrf-token", "csrf-token", "x-amz-security-token"
     );
+    private static final String SANITIZED_QUERY_VALUE = "{{secret}}";
+    private static final String SANITIZED_RAW_QUERY_VALUE = "%7B%7Bsecret%7D%7D";
 
     record Options(
             boolean preserveHostHeader,
@@ -66,7 +67,7 @@ final class RequestConverter {
         result.put("name", name);
         result.put("description", "Captured from Burp Suite by Burp2Postman.");
         result.put("method", method);
-        result.put("url", url);
+        result.put("url", sanitized ? sanitizeUrlQuery(url) : url);
 
         StringBuilder legacyHeaders = new StringBuilder();
         List<Object> structuredHeaders = MiniJson.array();
@@ -108,31 +109,76 @@ final class RequestConverter {
                 ? legacyHeaders.toString()
                 : structuredHeaders);
 
-        addQueryParameters(result, url);
+        addQueryParameters(result, url, sanitized);
         addBody(result, safe(request.bodyToString(), ""), contentType, sanitized);
         return result;
     }
 
-    private static void addQueryParameters(Map<String, Object> result, String url) {
+    private static void addQueryParameters(Map<String, Object> result, String url, boolean sanitized) {
         List<Object> queryParams = MiniJson.array();
         result.put("queryParams", queryParams);
-        try {
-            String rawQuery = URI.create(url).getRawQuery();
-            if (rawQuery == null || rawQuery.isBlank()) {
-                return;
-            }
-            for (String pair : rawQuery.split("&", -1)) {
-                String[] parts = pair.split("=", 2);
-                Map<String, Object> parameter = MiniJson.object();
-                parameter.put("key", decode(parts[0]));
-                parameter.put("value", parts.length == 2 ? decode(parts[1]) : "");
-                parameter.put("enabled", true);
-                parameter.put("equals", parts.length == 2);
-                queryParams.add(parameter);
-            }
-        } catch (IllegalArgumentException ignored) {
-            // The raw URL is retained even if query parsing fails.
+        String rawQuery = rawQueryOf(url);
+        if (rawQuery == null || rawQuery.isBlank()) {
+            return;
         }
+        for (String pair : rawQuery.split("&", -1)) {
+            String[] parts = pair.split("=", 2);
+            String key = decodeQueryComponent(parts[0]);
+            boolean hasValue = parts.length == 2;
+            String value = hasValue ? decodeQueryComponent(parts[1]) : "";
+            if (sanitized && hasValue && isSensitiveQueryKey(key)) {
+                value = SANITIZED_QUERY_VALUE;
+            }
+
+            Map<String, Object> parameter = MiniJson.object();
+            parameter.put("key", key);
+            parameter.put("value", value);
+            parameter.put("enabled", true);
+            parameter.put("equals", hasValue);
+            queryParams.add(parameter);
+        }
+    }
+
+    static String sanitizeUrlQuery(String url) {
+        String value = safe(url, "");
+        int fragmentStart = value.indexOf('#');
+        int queryStart = value.indexOf('?');
+        if (queryStart < 0 || (fragmentStart >= 0 && queryStart > fragmentStart)) {
+            return value;
+        }
+
+        int queryEnd = fragmentStart >= 0 ? fragmentStart : value.length();
+        String rawQuery = value.substring(queryStart + 1, queryEnd);
+        if (rawQuery.isBlank()) {
+            return value;
+        }
+
+        StringBuilder sanitizedQuery = new StringBuilder(rawQuery.length());
+        String[] pairs = rawQuery.split("&", -1);
+        for (int i = 0; i < pairs.length; i++) {
+            if (i > 0) sanitizedQuery.append('&');
+            String pair = pairs[i];
+            String[] parts = pair.split("=", 2);
+            sanitizedQuery.append(parts[0]);
+            if (parts.length == 2) {
+                sanitizedQuery.append('=');
+                sanitizedQuery.append(isSensitiveQueryKey(decodeQueryComponent(parts[0]))
+                        ? SANITIZED_RAW_QUERY_VALUE
+                        : parts[1]);
+            }
+        }
+        return value.substring(0, queryStart + 1) + sanitizedQuery + value.substring(queryEnd);
+    }
+
+    private static String rawQueryOf(String url) {
+        String value = safe(url, "");
+        int fragmentStart = value.indexOf('#');
+        int queryStart = value.indexOf('?');
+        if (queryStart < 0 || (fragmentStart >= 0 && queryStart > fragmentStart)) {
+            return null;
+        }
+        int queryEnd = fragmentStart >= 0 ? fragmentStart : value.length();
+        return value.substring(queryStart + 1, queryEnd);
     }
 
     private static void addBody(
@@ -153,8 +199,8 @@ final class RequestConverter {
             for (String pair : finalBody.split("&", -1)) {
                 String[] parts = pair.split("=", 2);
                 Map<String, Object> field = MiniJson.object();
-                field.put("key", decode(parts[0]));
-                field.put("value", parts.length == 2 ? decode(parts[1]) : "");
+                field.put("key", decodeFormComponent(parts[0]));
+                field.put("value", parts.length == 2 ? decodeFormComponent(parts[1]) : "");
                 field.put("type", "text");
                 field.put("enabled", true);
                 data.add(field);
@@ -162,7 +208,7 @@ final class RequestConverter {
             return;
         }
 
-        // Multipart bodies are intentionally preserved as raw bytes-as-text in v0.1.1.
+        // Multipart bodies are intentionally preserved as raw bytes-as-text in v0.2.0.
         // Postman cannot reconstruct the original local file path from a Burp-captured upload.
         result.put("dataMode", "raw");
         result.put("rawModeData", finalBody);
@@ -223,7 +269,7 @@ final class RequestConverter {
             for (String pair : body.split("&", -1)) {
                 if (rebuilt.length() > 0) rebuilt.append('&');
                 String[] parts = pair.split("=", 2);
-                String decodedKey = decode(parts[0]);
+                String decodedKey = decodeFormComponent(parts[0]);
                 String lower = normalizeKey(decodedKey);
                 rebuilt.append(parts[0]);
                 if (parts.length == 2) {
@@ -276,6 +322,21 @@ final class RequestConverter {
                 || lower.contains("session") || lower.contains("authorization");
     }
 
+    private static boolean isSensitiveQueryKey(String key) {
+        String normalized = normalizeKey(safe(key, ""));
+        return normalized.equals("key")
+                || normalized.equals("code")
+                || normalized.equals("sig")
+                || normalized.contains("token")
+                || normalized.contains("apikey")
+                || normalized.contains("secret")
+                || normalized.contains("password")
+                || normalized.contains("passwd")
+                || normalized.contains("session")
+                || normalized.contains("authorization")
+                || normalized.contains("signature");
+    }
+
     private static String languageFor(String contentType) {
         if (contentType.contains("json")) return "json";
         if (contentType.contains("xml")) return "xml";
@@ -284,7 +345,13 @@ final class RequestConverter {
         return "text";
     }
 
-    private static String decode(String value) {
+    private static String decodeQueryComponent(String value) {
+        // URLDecoder implements HTML form rules and treats '+' as a space.
+        // Escaping literal plus signs first preserves raw query semantics.
+        return decodeFormComponent(safe(value, "").replace("+", "%2B"));
+    }
+
+    private static String decodeFormComponent(String value) {
         try {
             return URLDecoder.decode(value, StandardCharsets.UTF_8);
         } catch (IllegalArgumentException e) {
