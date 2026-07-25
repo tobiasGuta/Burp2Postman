@@ -82,6 +82,7 @@ Direct sending uses the Postman cloud API. An exact send may upload session cook
 - Enabling **Remember API key** stores it through Burp's extension preferences. Treat the Burp user configuration and project environment as sensitive.
 - The API endpoint is locked to `api.postman.com` by default. A custom endpoint must be enabled under **Advanced**, shows the exact hostname that will receive `X-API-Key`, and requires explicit confirmation before first use in the current configuration.
 - Authenticated API requests do not follow redirects. Configure and confirm the final HTTPS endpoint directly.
+- The Postman-compatible User-Agent is accompanied by `X-Burp2Postman-Version`, which identifies the extension without triggering the Postman API gateway's HTML challenge response.
 - Saved destinations include the API endpoint where they were loaded. Changing endpoints clears the destination selectors and requires reconnecting; sends are also rejected if a stale destination does not match the current endpoint.
 - Response bodies are not uploaded by this version.
 

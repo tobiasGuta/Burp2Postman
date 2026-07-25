@@ -12,6 +12,7 @@
 - Renamed the Java/Maven namespace from `com.tobiasare` to `com.tobiasguta`.
 - Sanitized sensitive query values in both the raw URL and structured query payload while preserving literal `+` characters.
 - Bound saved destinations to their originating API endpoint and invalidate or reject stale cross-endpoint destinations.
+- Restored Postman API gateway compatibility by keeping the required `PostmanRuntime/x.y.z` User-Agent shape and exposing `Burp2Postman/0.2.0` through a separate identity header.
 
 ## 0.1.1 - 2026-07-25
 

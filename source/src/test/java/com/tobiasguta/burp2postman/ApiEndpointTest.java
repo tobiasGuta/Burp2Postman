@@ -53,4 +53,22 @@ class ApiEndpointTest {
     void clientNeverFollowsRedirectsWithTheApiKey() {
         assertEquals(HttpClient.Redirect.NEVER, new PostmanClient().redirectPolicy());
     }
+
+    @Test
+    void gatewayCompatibilityKeepsRuntimeAndExtensionIdentitySeparate() {
+        assertEquals("PostmanRuntime/7.0.0", PostmanClient.compatibilityUserAgent());
+        assertEquals("Burp2Postman/0.2.0", PostmanClient.clientIdentity());
+        assertFalse(PostmanClient.compatibilityUserAgent().contains("Burp2Postman"));
+    }
+
+    @Test
+    void cloudflareHtmlIsReportedWithoutDumpingTheChallengePage() {
+        String message = PostmanClient.extractError(
+                "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
+                        + "<body><script src=\"https://challenges.cloudflare.com/test\"></script></body></html>"
+        );
+
+        assertTrue(message.contains("Cloudflare challenge"));
+        assertFalse(message.contains("<html>"));
+    }
 }

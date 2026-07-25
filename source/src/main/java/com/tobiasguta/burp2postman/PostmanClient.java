@@ -19,6 +19,8 @@ import static com.tobiasguta.burp2postman.Models.ItemRef;
 
 final class PostmanClient {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    private static final String POSTMAN_COMPATIBILITY_USER_AGENT = "PostmanRuntime/7.0.0";
+    private static final String CLIENT_IDENTITY = "Burp2Postman/0.2.0";
 
     private final HttpClient httpClient;
 
@@ -236,7 +238,11 @@ final class PostmanClient {
                 .timeout(REQUEST_TIMEOUT)
                 .header("Accept", "application/json")
                 .header("X-API-Key", apiKey.trim())
-                .header("User-Agent", "Burp2Postman/0.2.0 PostmanRuntime-compatible");
+                // The Postman gateway currently challenges User-Agent values
+                // with extra product tokens. Keep its required runtime shape
+                // and expose the extension's identity in a separate header.
+                .header("User-Agent", compatibilityUserAgent())
+                .header("X-Burp2Postman-Version", clientIdentity());
     }
 
     private Map<String, Object> execute(HttpRequest request) throws IOException, InterruptedException {
@@ -259,9 +265,18 @@ final class PostmanClient {
         }
     }
 
-    private static String extractError(String body) {
+    static String extractError(String body) {
         if (body == null || body.isBlank()) {
             return "Postman returned an empty error response.";
+        }
+        String lowerBody = body.toLowerCase(java.util.Locale.ROOT);
+        if (lowerBody.contains("challenges.cloudflare.com")
+                || lowerBody.contains("<title>just a moment")) {
+            return "The Postman API gateway returned a Cloudflare challenge. "
+                    + "Check for a proxy that rewrites User-Agent headers and use the latest Burp2Postman build.";
+        }
+        if (lowerBody.contains("<!doctype html") || lowerBody.contains("<html")) {
+            return "The Postman API gateway returned an HTML error page instead of JSON.";
         }
         try {
             Map<String, Object> root = MiniJson.asObject(MiniJson.parse(body));
@@ -304,6 +319,14 @@ final class PostmanClient {
 
     HttpClient.Redirect redirectPolicy() {
         return httpClient.followRedirects();
+    }
+
+    static String compatibilityUserAgent() {
+        return POSTMAN_COMPATIBILITY_USER_AGENT;
+    }
+
+    static String clientIdentity() {
+        return CLIENT_IDENTITY;
     }
 
     private static String encode(String value) {
